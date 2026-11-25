@@ -1,0 +1,12 @@
+{
+  "name": "doors2d",
+  "version": "1.0.0",
+  "description": "Doors 2D - iki oyunculu online kapı yarışı",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

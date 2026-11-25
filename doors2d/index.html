@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>DOORS 2D — Yarış</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#0b0907;color:#e8dcc8;font-family:system-ui,Segoe UI,Roboto,sans-serif;min-height:100vh}
+#lobby{max-width:480px;margin:7vh auto;padding:24px;text-align:center}
+h1{letter-spacing:8px;font-weight:800;margin:0 0 4px;color:#e9c46a;font-size:40px}
+.sub{opacity:.7;margin-bottom:26px;font-size:14px;line-height:1.5}
+button{background:#3a2a1a;color:#f1e3c8;border:1px solid #7a5a35;padding:12px 18px;border-radius:8px;font-size:16px;cursor:pointer;margin:6px}
+button:hover{background:#51391f}
+input{background:#1a140e;color:#fff;border:1px solid #7a5a35;border-radius:8px;padding:12px;font-size:18px;width:130px;text-align:center;text-transform:uppercase;letter-spacing:4px}
+.row{margin:10px 0}
+#status{margin-top:18px;min-height:60px;font-size:15px;line-height:1.5}
+#code{font-size:46px;letter-spacing:12px;color:#e9c46a;font-weight:800}
+.help{margin-top:30px;font-size:13px;opacity:.7;line-height:1.7;text-align:left;border-top:1px solid #3a2a1a;padding-top:14px}
+#game{display:none;max-width:1360px;margin:0 auto;padding:10px}
+#bars{display:flex;gap:12px;margin-bottom:8px}
+.bar{flex:1}
+.bar .lbl{display:flex;justify-content:space-between;font-size:13px;margin-bottom:3px}
+.bar .track{height:10px;background:#221a12;border-radius:6px;overflow:hidden}
+.bar .fill{height:100%;width:0;transition:width .4s}
+#fm{background:#4aa3ff}
+#fo{background:#ff7a5a}
+#panels{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+canvas{width:100%;height:auto;background:#000;border:2px solid #3a2a1a;border-radius:6px;display:block}
+#legend{margin-top:8px;font-size:13px;opacity:.65;text-align:center}
+#count{position:fixed;inset:0;display:none;align-items:center;justify-content:center;font-size:130px;font-weight:800;color:#e9c46a;text-shadow:0 0 30px #000;pointer-events:none}
+#over{position:fixed;inset:0;background:rgba(0,0,0,.82);display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+#over h2{font-size:56px;margin:0;color:#e9c46a;letter-spacing:4px}
+#over p{opacity:.8;font-size:18px}
+</style>
+</head>
+<body>
+<div id="lobby">
+  <h1>DOORS 2D</h1>
+  <div class="sub">İki oyunculu kapı yarışı. Aynı anda 1. kapıdan başlarsınız, ama herkes kendi (farklı) odalarında koşar.<br>İlk <b id="tg">25</b> kapıyı açan kazanır.</div>
+  <div class="row"><button id="bCreate">Oda kur</button></div>
+  <div class="row"><input id="inCode" maxlength="4" placeholder="KOD"><button id="bJoin">Odaya katıl</button></div>
+  <div class="row"><button id="bQueue">Rastgele eşleş</button></div>
+  <div id="status"></div>
+  <div class="help">
+    <b>Kontroller</b><br>
+    A / D veya ← / → : yürü<br>
+    E : kapıyı aç · dolaba gir/çık · anahtarı al<br>
+    SPACE : Screech çıkınca hemen bas!<br><br>
+    <b>Tehlikeler</b><br>
+    ⚠ Işıklar titrerse <b>Rush</b> / <b>Ambush</b> geliyor → en yakın dolaba saklan.<br>
+    Ambush birkaç kez gidip gelir; sakın erken çıkma.<br>
+    Ölürsen 4 sn sonra odanın başında dirilirsin.
+  </div>
+</div>
+
+<div id="game">
+  <div id="bars">
+    <div class="bar"><div class="lbl"><span style="color:#4aa3ff">SEN</span><span id="tm">0/25</span></div><div class="track"><div class="fill" id="fm"></div></div></div>
+    <div class="bar"><div class="lbl"><span style="color:#ff7a5a">RAKİP</span><span id="to">0/25</span></div><div class="track"><div class="fill" id="fo"></div></div></div>
+  </div>
+  <div id="panels">
+    <canvas id="cMe" width="640" height="400"></canvas>
+    <canvas id="cOpp" width="640" height="400"></canvas>
+  </div>
+  <div id="legend">A/D yürü · E etkileşim (kapı / dolap / anahtar) · SPACE Screech'i kov</div>
+</div>
+<div id="count"></div>
+<div id="over"><h2 id="ovT"></h2><p id="ovS"></p><button id="bAgain">Yeniden oyna</button></div>
+
+<script>
+(() => {
+'use strict';
+const W = 640, H = 400, FLOOR = 330, SPEED = 250;
+const $ = id => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const pad = n => String(n).padStart(3, '0');
+
+// ---------- Ses ----------
+let ac = null;
+function initAudio() { try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); if (ac.state === 'suspended') ac.resume(); } catch (e) {} }
+function snd(f, d = 0.15, type = 'sine', v = 0.05, slide = 0) {
+  if (!ac) return;
+  try {
+    const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime;
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(20, f + slide), t + d);
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(g); g.connect(ac.destination); o.start(t); o.stop(t + d);
+  } catch (e) {}
+}
+
+// ---------- Tohumlu rastgele sayı + oda üretimi ----------
+function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const roomCache = new Map();
+function getRoom(seed, n) { const k = seed + ':' + n; let r = roomCache.get(k); if (!r) { r = genRoom(seed, n); roomCache.set(k, r); } return r; }
+function genRoom(seed, n) {
+  const rnd = mulberry32((seed ^ Math.imul(n, 0x9E3779B1)) >>> 0);
+  const L = Math.floor(1500 + rnd() * 900 + Math.min(n, 30) * 8);
+  const hues = [20, 35, 48, 120, 150, 210, 280];
+  const hue = hues[Math.floor(rnd() * hues.length)];
+  const dark = n >= 4 && rnd() < 0.28;
+  const locked = n >= 2 && rnd() < 0.3;
+  const closets = [];
+  for (let x = 250 + rnd() * 80; x < L - 320; x += 380 + rnd() * 80) closets.push(Math.floor(x));
+  let kx = Math.floor(350 + rnd() * (L - 850));
+  if (closets.some(c => Math.abs(c - kx) < 70)) kx += 80;
+  let ev = null; const r1 = rnd(), r2 = rnd();
+  if (n >= 3 && r1 < 0.30) ev = 'rush';
+  else if (n >= 7 && r1 < 0.50) ev = 'ambush';
+  else if (n >= 5 && r2 < 0.30) ev = 'screech';
+  const evDelay = 3.5 + rnd() * 5.5;
+  const passes = 2 + Math.floor(rnd() * 2);
+  const lamps = []; for (let x = 200 + rnd() * 100; x < L; x += 420) lamps.push(Math.floor(x));
+  const paints = []; for (let x = 350; x < L - 300; x += 500 + rnd() * 300) paints.push({ x: Math.floor(x), w: 50 + Math.floor(rnd() * 40), h: 40 + Math.floor(rnd() * 30), c: Math.floor(rnd() * 360) });
+  return { n, L, hue, dark, locked, closets, kx, ev, evDelay, passes, lamps, paints };
+}
+
+// ---------- Ağ ----------
+let ws = null, G = null, me = null, opp = null;
+const send = o => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); };
+function setStatus(h) { $('status').innerHTML = h; }
+function connect(then) {
+  initAudio();
+  if (ws && ws.readyState === 1) { then(); return; }
+  if (ws && ws.readyState === 0) return;
+  setStatus('Sunucuya bağlanılıyor...');
+  ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host);
+  ws.onopen = then;
+  ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch (_) { return; } onMsg(m); };
+  ws.onclose = () => { if (G && !G.over) showOver('Bağlantı koptu', 'Sayfayı yenileyip tekrar dene.'); else if (!G) setStatus('Bağlantı koptu. Sayfayı yenile.'); };
+  ws.onerror = () => setStatus('Sunucuya bağlanılamadı.');
+}
+$('bCreate').onclick = () => connect(() => send({ t: 'create' }));
+$('bJoin').onclick = () => { const c = $('inCode').value.trim(); if (c.length !== 4) { setStatus('4 harfli kodu gir.'); return; } connect(() => send({ t: 'join', code: c })); };
+$('bQueue').onclick = () => connect(() => send({ t: 'queue' }));
+$('bAgain').onclick = () => location.reload();
+
+function onMsg(m) {
+  switch (m.t) {
+    case 'created': setStatus('Oda kodu:<div id="code">' + m.code + '</div>Bu kodu arkadaşına gönder, katılınca oyun başlar.'); break;
+    case 'queued': setStatus('Rakip aranıyor... (Başka biri "Rastgele eşleş"e basınca başlar)'); break;
+    case 'err': setStatus(m.msg); break;
+    case 'start': startGame(m); break;
+    case 'opp': onOppState(m.s); break;
+    case 'oppDoor': if (G) G.oppDone = m.room; break;
+    case 'over': if (G) { G.over = true; const win = m.winner === 'you'; showOver(win ? 'KAZANDIN! 🏆' : 'KAYBETTİN', m.reason === 'left' ? 'Rakip oyundan ayrıldı.' : (win ? 'Önce bitirdin!' : 'Rakip önce bitirdi.')); } break;
+  }
+}
+function showOver(t, s) { if (G) G.over = true; $('ovT').textContent = t; $('ovS').textContent = s; $('over').style.display = 'flex'; $('count').style.display = 'none'; }
+
+// ---------- Girdi ----------
+const keys = {}; let pressE = false, pressSpace = false;
+addEventListener('keydown', e => {
+  if (G && ['Space', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.code)) e.preventDefault();
+  if (e.repeat) return;
+  keys[e.code] = true;
+  if (e.code === 'KeyE') pressE = true;
+  if (e.code === 'Space') pressSpace = true;
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+
+// ---------- Oyun durumu ----------
+function startGame(m) {
+  $('lobby').style.display = 'none'; $('game').style.display = 'block';
+  G = { seed: m.seed, oppSeed: m.oppSeed, target: m.target, startAt: performance.now() + m.countdown * 1000, over: false, oppDone: 0, last: performance.now(), time: 0, snapAcc: 0 };
+  me = { room: 1, rd: null, x: 140, dir: 1, walk: 0, moving: false, hd: -1, hp: 100, hasKey: false, keyTaken: false, op: 0, roomT: 0, fade: 1, state: 'play', ev: null, deadT: 0, done: 0, deaths: 0, msg: '', msgT: 0, hint: '', hurtT: 0 };
+  enterRoom(1);
+  opp = { room: 1, x: 140, tx: 140, dir: 1, hd: -1, hp: 100, dd: 0, k: 0, kt: 0, op: 0, ev: null, evx: 0, evt: 0, walk: 0, moving: false };
+  $('tm').textContent = '0/' + G.target; $('to').textContent = '0/' + G.target;
+  requestAnimationFrame(loop);
+}
+function enterRoom(n) {
+  me.room = n; me.rd = getRoom(G.seed, n);
+  me.x = 140; me.hd = -1; me.hasKey = false; me.keyTaken = false; me.op = 0; me.roomT = 0; me.fade = 1; me.state = 'play';
+  me.ev = me.rd.ev ? { type: me.rd.ev, phase: 'wait', t: 0, x: -9999, dir: 1, pass: 0 } : null;
+}
+function setMsg(t, s = 2.5) { me.msg = t; me.msgT = s; }
+function kill(why) {
+  if (me.state === 'dead') return;
+  me.state = 'dead'; me.deadT = 4; me.hd = -1; me.deaths++;
+  snd(300, 0.7, 'triangle', 0.09, -250);
+  setMsg(why === 'screech' ? 'Screech seni yakaladı!' : (why === 'ambush' ? 'Ambush seni yakaladı!' : 'Rush seni ezdi!'), 4);
+}
+function hurt(n) { me.hp -= n; me.hurtT = 0.4; snd(200, 0.3, 'sawtooth', 0.07, -120); if (me.hp <= 0) kill('screech'); else setMsg('Screech: -' + n + ' can', 2); }
+
+function updateEv(dt) {
+  const e = me.ev, rd = me.rd, L = rd.L;
+  if (!e || e.phase === 'gone') return;
+  if (e.phase === 'wait') {
+    if (me.roomT >= rd.evDelay) {
+      if (e.type === 'screech') { e.phase = 'screech'; e.t = 0; e.x = me.x; snd(1800, 0.5, 'square', 0.04, -1300); }
+      else { e.phase = 'warn'; e.t = 0; snd(70, e.type === 'rush' ? 2.6 : 3.2, 'sawtooth', 0.07); }
+    }
+  } else if (e.phase === 'warn') {
+    e.t += dt;
+    if (e.t >= (e.type === 'rush' ? 2.6 : 3.2)) { e.phase = 'run'; e.pass = 0; e.dir = 1; e.x = -250; snd(140, 1, 'sawtooth', 0.1, -70); }
+  } else if (e.phase === 'run') {
+    const sp = e.type === 'rush' ? 1500 : 1100;
+    e.x += e.dir * sp * dt;
+    if (me.state === 'play' && me.hd < 0 && Math.abs(e.x - me.x) < 60) kill(e.type);
+    if ((e.dir === 1 && e.x > L + 250) || (e.dir === -1 && e.x < -250)) {
+      e.pass++;
+      if (e.type === 'rush' || e.pass >= rd.passes) e.phase = 'gone';
+      else { e.phase = 'pause'; e.t = 0; }
+    }
+  } else if (e.phase === 'pause') {
+    e.t += dt;
+    if (e.t >= 0.7) { e.dir *= -1; e.phase = 'run'; e.x = e.dir === 1 ? -250 : L + 250; snd(140, 1, 'sawtooth', 0.1, -70); }
+  } else if (e.phase === 'screech') {
+    e.t += dt;
+    if (me.state === 'play' && pressSpace && e.t > 0.1) { e.phase = 'gone'; setMsg('Screech\'i kovdun!', 1.5); snd(900, 0.2, 'triangle', 0.05, 300); }
+    else if (e.t >= 1.3) { e.phase = 'gone'; if (me.state === 'play') hurt(20); }
+  }
+}
+
+function update(dt) {
+  const rd = me.rd, L = rd.L;
+  me.msgT = Math.max(0, me.msgT - dt); me.hurtT = Math.max(0, me.hurtT - dt); me.fade = Math.max(0, me.fade - dt * 2);
+  me.hint = '';
+  if (me.state === 'finished') return;
+  if (me.state === 'dead') {
+    me.roomT += dt; updateEv(dt);
+    me.deadT -= dt;
+    if (me.deadT <= 0) { me.hp = 100; enterRoom(me.room); }
+    return;
+  }
+  if (me.state === 'opening') {
+    me.op += dt / 0.6;
+    if (me.op >= 1) finishDoor();
+    return;
+  }
+  // hareket
+  let dx = 0;
+  if (keys.ArrowLeft || keys.KeyA) dx -= 1;
+  if (keys.ArrowRight || keys.KeyD) dx += 1;
+  me.moving = false;
+  if (me.hd < 0) {
+    me.x = clamp(me.x + dx * SPEED * dt, 30, L - 40);
+    if (dx) { me.dir = dx; me.walk += dt * 10; me.moving = true; }
+  }
+  // etkileşim
+  const doorC = L - 65;
+  if (me.hd >= 0) {
+    me.hint = 'E: Dolaptan çık';
+    if (pressE) me.hd = -1;
+  } else {
+    const nearC = rd.closets.findIndex(c => Math.abs(me.x - c) < 45);
+    if (Math.abs(me.x - doorC) < 70) {
+      if (rd.locked && !me.hasKey) { me.hint = 'Kapı kilitli — anahtarı bul'; if (pressE) setMsg('Kilitli! Odada bir yerde anahtar var.'); }
+      else { me.hint = 'E: Kapıyı aç'; if (pressE) { me.state = 'opening'; me.op = 0; snd(180, 0.5, 'square', 0.04, -100); } }
+    } else if (rd.locked && !me.keyTaken && Math.abs(me.x - rd.kx) < 45) {
+      me.hint = 'E: Anahtarı al';
+      if (pressE) { me.keyTaken = true; me.hasKey = true; setMsg('Anahtarı aldın!', 1.5); snd(1200, 0.15, 'triangle', 0.05, 400); }
+    } else if (nearC >= 0) {
+      me.hint = 'E: Gizlen';
+      if (pressE) { me.hd = nearC; me.x = rd.closets[nearC]; snd(250, 0.1, 'square', 0.03); }
+    }
+  }
+  me.roomT += dt;
+  updateEv(dt);
+}
+function finishDoor() {
+  const done = me.room;
+  me.done = done;
+  send({ t: 'door', room: done });
+  if (done >= G.target) { me.state = 'finished'; setMsg('Son kapıyı açtın! Sonuç bekleniyor...', 10); return; }
+  me.hp = Math.min(100, me.hp + 10);
+  enterRoom(done + 1);
+}
+
+function snapshot() {
+  const e = me.ev;
+  const live = e && (e.phase === 'warn' || e.phase === 'run' || e.phase === 'screech');
+  return {
+    r: me.room, x: Math.round(me.x), d: me.dir, hd: me.hd, hp: me.hp, dd: me.state === 'dead' ? 1 : 0,
+    k: me.hasKey ? 1 : 0, kt: me.keyTaken ? 1 : 0, op: +me.op.toFixed(2),
+    ev: live ? { ty: e.type, ph: e.phase, x: Math.round(e.x), dr: e.dir } : null
+  };
+}
+
+// ---------- Rakip ----------
+function onOppState(s) {
+  if (!G || !s || typeof s.r !== 'number') return;
+  const nr = clamp(s.r | 0, 1, G.target);
+  if (nr !== opp.room) { opp.room = nr; opp.x = s.x; opp.ev = null; }
+  opp.tx = s.x; opp.dir = s.d || 1; opp.hd = s.hd; opp.hp = s.hp; opp.dd = s.dd; opp.k = s.k; opp.kt = s.kt; opp.op = s.op;
+  const ne = s.ev;
+  if (ne) { if (!opp.ev || opp.ev.ph !== ne.ph || Math.abs(opp.evx - ne.x) > 400) opp.evx = ne.x; opp.evt = ne.x; }
+  opp.ev = ne;
+}
+function updateOpp(dt) {
+  const prev = opp.x;
+  opp.x += (opp.tx - opp.x) * Math.min(1, dt * 14);
+  opp.moving = Math.abs(opp.x - prev) / Math.max(dt, 1e-3) > 20;
+  if (opp.moving) opp.walk += dt * 10;
+  if (opp.ev) opp.evx += (opp.evt - opp.evx) * Math.min(1, dt * 25);
+}
+
+// ---------- Çizim ----------
+function drawDoor(ctx, x, num, o) {
+  const w = 90, h = 170, y = FLOOR - h;
+  ctx.fillStyle = '#1b110a'; ctx.fillRect(x - 8, y - 10, w + 16, h + 10);
+  if (o.op > 0) { ctx.fillStyle = '#000'; ctx.fillRect(x, y, w, h); }
+  const pw = w * (1 - Math.min(1, o.op) * 0.85);
+  ctx.fillStyle = o.locked ? '#5b2d22' : '#6b4528'; ctx.fillRect(x, y, pw, h);
+  ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 2;
+  ctx.strokeRect(x + 8, y + 12, pw - 16, 60); ctx.strokeRect(x + 8, y + 86, pw - 16, 70);
+  ctx.fillStyle = '#d9b45a'; ctx.beginPath(); ctx.arc(x + pw - 12, y + 90, 4, 0, 7); ctx.fill();
+  ctx.fillStyle = '#0d0d0d'; ctx.fillRect(x + w / 2 - 26, y - 36, 52, 22);
+  ctx.fillStyle = '#e9c46a'; ctx.font = 'bold 15px monospace'; ctx.textAlign = 'center'; ctx.fillText(pad(num), x + w / 2, y - 20);
+  if (o.locked && o.op === 0) {
+    ctx.fillStyle = '#e9c46a'; ctx.fillRect(x + w / 2 - 10, y + 68, 20, 16);
+    ctx.strokeStyle = '#e9c46a'; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x + w / 2, y + 68, 7, Math.PI, 0); ctx.stroke();
+  }
+}
+function drawChar(ctx, x, color, dir, walk, moving, hasKey) {
+  const y = FLOOR, leg = moving ? Math.sin(walk) * 8 : 0;
+  ctx.fillStyle = 'rgba(0,0,0,.35)'; ctx.beginPath(); ctx.ellipse(x, y, 20, 5, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#1c1c28'; ctx.fillRect(x - 10 + leg, y - 18, 8, 18); ctx.fillRect(x + 2 - leg, y - 18, 8, 18);
+  ctx.fillStyle = color; ctx.fillRect(x - 12, y - 46, 24, 30);
+  ctx.fillStyle = '#f0c8a0'; ctx.beginPath(); ctx.arc(x, y - 56, 10, 0, 7); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.fillRect(x + dir * 4 - 1, y - 58, 3, 3);
+  if (hasKey) { ctx.fillStyle = '#e9c46a'; ctx.fillRect(x + dir * 14 - 2, y - 38, 4, 12); ctx.beginPath(); ctx.arc(x + dir * 14, y - 40, 5, 0, 7); ctx.fill(); }
+}
+function drawDead(ctx, x, color, dir) {
+  ctx.fillStyle = color; ctx.fillRect(x - 22, y0(16), 44, 16);
+  ctx.fillStyle = '#f0c8a0'; ctx.beginPath(); ctx.arc(x + dir * 28, y0(10), 10, 0, 7); ctx.fill();
+  ctx.fillStyle = '#222'; ctx.font = 'bold 12px monospace'; ctx.textAlign = 'center'; ctx.fillText('x', x + dir * 28, y0(6));
+}
+function y0(d) { return FLOOR - d; }
+function drawRush(ctx, x, dir, t) {
+  const y = FLOOR - 75, j = Math.sin(t * 50) * 3;
+  for (let i = 5; i >= 1; i--) { ctx.fillStyle = 'rgba(25,10,40,' + (0.14 * (6 - i) / 5) + ')'; ctx.beginPath(); ctx.ellipse(x - dir * i * 38, y, 60 + i * 4, 45, 0, 0, 7); ctx.fill(); }
+  ctx.shadowColor = '#7a3cff'; ctx.shadowBlur = 25;
+  ctx.fillStyle = '#0a0612'; ctx.beginPath(); ctx.ellipse(x, y + j, 62, 50, 0, 0, 7); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x - 20, y - 8 + j, 10, 0, 7); ctx.arc(x + 20, y - 8 + j, 10, 0, 7); ctx.fill();
+  ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(x - 20 + dir * 3, y - 8 + j, 4, 0, 7); ctx.arc(x + 20 + dir * 3, y - 8 + j, 4, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(x - 28, y + 20 + j);
+  for (let i = 0; i < 8; i++) ctx.lineTo(x - 28 + i * 8 + 4, y + (i % 2 ? 14 : 28) + j); ctx.stroke();
+}
+function drawAmbush(ctx, x, dir, t) {
+  const y = FLOOR - 70 + Math.sin(t * 30) * 4;
+  ctx.shadowColor = '#3fe08a'; ctx.shadowBlur = 20;
+  ctx.fillStyle = '#1d8a52'; ctx.beginPath(); ctx.ellipse(x, y, 55, 50, 0, 0, 7); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.ellipse(x - 18, y - 12, 11, 14, 0, 0, 7); ctx.ellipse(x + 18, y - 12, 11, 14, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(x - 18 + dir * 3, y - 10, 5, 0, 7); ctx.arc(x + 18 + dir * 3, y - 10, 5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#300'; ctx.beginPath(); ctx.ellipse(x, y + 22, 24, 10, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = '#fff'; for (let i = -2; i <= 2; i++) ctx.fillRect(x + i * 9 - 3, y + 14, 6, 7);
+}
+function drawScreech(ctx, x, t) {
+  const y = FLOOR - 105 + Math.sin(t * 20) * 4;
+  ctx.fillStyle = '#e8e8f0'; ctx.beginPath(); ctx.arc(x, y, 20, 0, 7); ctx.fill();
+  ctx.fillStyle = '#000'; ctx.beginPath(); ctx.arc(x - 7, y - 3, 6, 0, 7); ctx.arc(x + 7, y - 3, 6, 0, 7); ctx.fill();
+  ctx.fillStyle = '#c00'; ctx.beginPath(); ctx.ellipse(x, y + 9, 9, 5, 0, 0, 7); ctx.fill();
+}
+
+function drawPanel(ctx, v, rd, t, o) {
+  const L = rd.L, cam = clamp(v.x - W / 2, 0, L - W);
+  ctx.clearRect(0, 0, W, H);
+  ctx.textAlign = 'left';
+  // duvar & zemin
+  ctx.fillStyle = 'hsl(' + rd.hue + ',28%,24%)'; ctx.fillRect(0, 0, W, FLOOR);
+  ctx.fillStyle = 'hsl(' + rd.hue + ',28%,20%)';
+  for (let sx = -(cam % 64); sx < W; sx += 64) ctx.fillRect(sx, 0, 30, FLOOR);
+  ctx.fillStyle = 'hsl(25,38%,15%)'; ctx.fillRect(0, FLOOR, W, H - FLOOR);
+  ctx.strokeStyle = 'hsl(25,38%,9%)'; ctx.lineWidth = 2;
+  for (let sx = -(cam % 90); sx < W; sx += 90) { ctx.beginPath(); ctx.moveTo(sx, FLOOR); ctx.lineTo(sx - 30, H); ctx.stroke(); }
+  ctx.fillStyle = 'hsl(25,30%,11%)'; ctx.fillRect(0, FLOOR - 12, W, 12);
+
+  ctx.save(); ctx.translate(-cam, 0);
+  // lambalar
+  for (const lx of rd.lamps) {
+    if (lx < cam - 180 || lx > cam + W + 180) continue;
+    const g = ctx.createRadialGradient(lx, 50, 5, lx, 50, 170);
+    g.addColorStop(0, 'rgba(255,215,140,.35)'); g.addColorStop(1, 'rgba(255,215,140,0)');
+    ctx.fillStyle = g; ctx.fillRect(lx - 170, 0, 340, FLOOR);
+    ctx.fillStyle = '#d9b45a'; ctx.fillRect(lx - 2, 0, 4, 26);
+    ctx.fillStyle = '#ffe6a0'; ctx.fillRect(lx - 12, 26, 24, 10);
+  }
+  // tablolar
+  for (const p of rd.paints) {
+    if (p.x < cam - 100 || p.x > cam + W + 100) continue;
+    ctx.fillStyle = '#2a1a0c'; ctx.fillRect(p.x - p.w / 2 - 4, 70 - 4, p.w + 8, p.h + 8);
+    ctx.fillStyle = 'hsl(' + p.c + ',35%,38%)'; ctx.fillRect(p.x - p.w / 2, 70, p.w, p.h);
+    ctx.fillStyle = 'hsl(' + p.c + ',35%,25%)'; ctx.fillRect(p.x - p.w / 2, 70 + p.h * 0.6, p.w, p.h * 0.4);
+  }
+  // giriş kapısı (dekor)
+  if (rd.n > 1) drawDoor(ctx, 10, rd.n - 1, { op: 0, locked: false });
+  // çıkış kapısı
+  const locked = rd.locked && !v.hasKey;
+  drawDoor(ctx, L - 110, rd.n, { op: v.op || 0, locked });
+  // dolaplar
+  rd.closets.forEach((c, i) => {
+    if (c < cam - 100 || c > cam + W + 100) return;
+    ctx.fillStyle = '#4a2f1b'; ctx.fillRect(c - 35, FLOOR - 135, 70, 135);
+    ctx.strokeStyle = '#2a190c'; ctx.lineWidth = 3; ctx.strokeRect(c - 35, FLOOR - 135, 70, 135);
+    ctx.beginPath(); ctx.moveTo(c, FLOOR - 135); ctx.lineTo(c, FLOOR); ctx.stroke();
+    ctx.fillStyle = '#d9b45a'; ctx.fillRect(c - 8, FLOOR - 70, 4, 10); ctx.fillRect(c + 4, FLOOR - 70, 4, 10);
+    if (v.hd === i) { ctx.fillStyle = '#fff'; ctx.fillRect(c - 14, FLOOR - 100, 8, 4); ctx.fillRect(c + 6, FLOOR - 100, 8, 4); }
+  });
+  // anahtar
+  if (rd.locked && !v.keyTaken) {
+    const ky = FLOOR - 24 + Math.sin(t * 4) * 3;
+    ctx.fillStyle = '#ffd34d'; ctx.beginPath(); ctx.arc(rd.kx, ky, 7, 0, 7); ctx.fill();
+    ctx.fillRect(rd.kx - 2, ky, 4, 18); ctx.fillRect(rd.kx, ky + 10, 8, 3); ctx.fillRect(rd.kx, ky + 15, 6, 3);
+  }
+  // oyuncu
+  if (v.hd < 0) { if (v.dead) drawDead(ctx, v.x, o.color, v.dir); else drawChar(ctx, v.x, o.color, v.dir, v.walk, v.moving, v.hasKey); }
+  // yaratıklar
+  const ev = v.ev;
+  if (ev && ev.ph === 'run') { if (ev.ty === 'rush') drawRush(ctx, ev.x, ev.dr || 1, t); else drawAmbush(ctx, ev.x, ev.dr || 1, t); }
+  if (ev && ev.ph === 'screech') drawScreech(ctx, ev.x + 34, t);
+  ctx.restore();
+
+  // karanlık oda
+  if (rd.dark) {
+    const px = v.x - cam;
+    const g = ctx.createRadialGradient(px, FLOOR - 50, 10, px, FLOOR - 50, 240);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.55, 'rgba(0,0,0,.6)'); g.addColorStop(1, 'rgba(0,0,0,.97)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+  // ışık titremesi
+  if (ev && ev.ph === 'warn' && Math.sin(t * 38) < 0) { ctx.fillStyle = 'rgba(0,0,0,.7)'; ctx.fillRect(0, 0, W, H); }
+  if (v.hd >= 0) { ctx.fillStyle = 'rgba(0,0,0,.4)'; ctx.fillRect(0, 0, W, H); }
+  if (o.hurt > 0) { ctx.fillStyle = 'rgba(200,0,0,' + o.hurt * 0.8 + ')'; ctx.fillRect(0, 0, W, H); }
+  if (v.dead) { ctx.fillStyle = 'rgba(90,0,0,.45)'; ctx.fillRect(0, 0, W, H); }
+  const fadeA = Math.max(o.fade || 0, v.op > 0.6 ? (v.op - 0.6) / 0.4 : 0);
+  if (fadeA > 0) { ctx.fillStyle = 'rgba(0,0,0,' + fadeA + ')'; ctx.fillRect(0, 0, W, H); }
+
+  // HUD
+  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(0, 0, W, 30);
+  ctx.fillStyle = '#e9c46a'; ctx.font = 'bold 16px monospace'; ctx.fillText('KAPI ' + pad(rd.n), 10, 20);
+  ctx.fillStyle = '#331a1a'; ctx.fillRect(110, 10, 100, 10);
+  ctx.fillStyle = v.hp > 40 ? '#5c5' : '#e44'; ctx.fillRect(110, 10, clamp(v.hp, 0, 100), 10);
+  if (v.hasKey) ctx.fillText('🔑', 222, 21);
+  if (o.deaths !== undefined) { ctx.fillStyle = '#bbb'; ctx.fillText('☠ ' + o.deaths, 262, 20); }
+  ctx.textAlign = 'right'; ctx.fillStyle = o.color; ctx.fillText(o.label, W - 10, 20);
+  ctx.textAlign = 'center';
+  if (ev && ev.ph === 'warn') { ctx.fillStyle = '#ff5555'; ctx.font = 'bold 18px monospace'; ctx.fillText('⚠ IŞIKLAR TİTRİYOR — SAKLAN!', W / 2, 62); }
+  if (ev && ev.ph === 'screech') { ctx.fillStyle = '#fff'; ctx.font = 'bold 26px monospace'; ctx.fillText(o.me ? 'SPACE!!!' : 'SCREECH!', W / 2, 70); }
+  if (v.dead) { ctx.fillStyle = '#fff'; ctx.font = 'bold 28px monospace'; ctx.fillText(o.me ? 'ÖLDÜN — ' + Math.ceil(o.deadT) + ' sn' : 'RAKİP ÖLDÜ', W / 2, 190); }
+  if (o.msg && o.msgT > 0 && !v.dead) { ctx.fillStyle = '#fff'; ctx.font = 'bold 15px monospace'; ctx.fillText(o.msg, W / 2, 100); }
+  if (o.hint && !v.dead) {
+    ctx.font = 'bold 15px monospace';
+    const tw = ctx.measureText(o.hint).width + 24;
+    ctx.fillStyle = 'rgba(0,0,0,.65)'; ctx.fillRect(W / 2 - tw / 2, H - 38, tw, 26);
+    ctx.fillStyle = '#fff'; ctx.fillText(o.hint, W / 2, H - 20);
+  }
+  ctx.textAlign = 'left';
+}
+
+// ---------- Ana döngü ----------
+const ctxMe = $('cMe').getContext('2d'), ctxOpp = $('cOpp').getContext('2d');
+let lastTm = -1, lastTo = -1;
+function loop(now) {
+  if (!G) return;
+  const dt = Math.min(0.05, (now - G.last) / 1000); G.last = now; G.time += dt;
+  const started = now >= G.startAt;
+  if (started && !G.over) update(dt);
+  G.snapAcc += dt;
+  if (G.snapAcc >= 1 / 15) { G.snapAcc = 0; if (!G.over) send({ t: 'state', s: snapshot() }); }
+  updateOpp(dt);
+
+  const e = me.ev;
+  const vMe = {
+    room: me.room, x: me.x, dir: me.dir, hd: me.hd, hp: me.hp, dead: me.state === 'dead', hasKey: me.hasKey, keyTaken: me.keyTaken, op: me.op,
+    ev: e && (e.phase === 'warn' || e.phase === 'run' || e.phase === 'screech') ? { ph: e.phase, ty: e.type, x: e.x, dr: e.dir } : null,
+    walk: me.walk, moving: me.moving
+  };
+  drawPanel(ctxMe, vMe, me.rd, G.time, { me: true, label: 'SEN', color: '#4aa3ff', hint: me.hint, msg: me.msg, msgT: me.msgT, deadT: me.deadT, deaths: me.deaths, hurt: me.hurtT, fade: me.fade });
+
+  const vOpp = {
+    room: opp.room, x: opp.x, dir: opp.dir, hd: opp.hd, hp: opp.hp, dead: !!opp.dd, hasKey: !!opp.k, keyTaken: !!opp.kt, op: opp.op,
+    ev: opp.ev ? { ph: opp.ev.ph, ty: opp.ev.ty, x: opp.evx, dr: opp.ev.dr } : null,
+    walk: opp.walk, moving: opp.moving
+  };
+  drawPanel(ctxOpp, vOpp, getRoom(G.oppSeed, opp.room), G.time, { me: false, label: 'RAKİP', color: '#ff7a5a' });
+
+  if (me.done !== lastTm) { lastTm = me.done; $('tm').textContent = me.done + '/' + G.target; $('fm').style.width = (me.done / G.target * 100) + '%'; }
+  if (G.oppDone !== lastTo) { lastTo = G.oppDone; $('to').textContent = G.oppDone + '/' + G.target; $('fo').style.width = (G.oppDone / G.target * 100) + '%'; }
+
+  const c = $('count');
+  if (!G.over) {
+    const rem = (G.startAt - now) / 1000;
+    if (rem > 0) { c.style.display = 'flex'; c.textContent = Math.ceil(rem); }
+    else if (rem > -0.8) { c.style.display = 'flex'; c.textContent = 'BAŞLA!'; }
+    else c.style.display = 'none';
+  }
+  pressE = false; pressSpace = false;
+  requestAnimationFrame(loop);
+}
+})();
+</script>
+</body>
+</html>
